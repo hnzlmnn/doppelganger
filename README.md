@@ -75,4 +75,4 @@ The repository also includes a `Pipfile` for those that prefer `pipenv`.
 
 In the following example, the debug output when a client uses the proxy to connect to `example.com` can be seen. 
 
-![Demo](/hnzlmnn/doppelganger/blob/assets/demo.gif?raw=true)
+![Demo](/../assets/demo.gif?raw=true)
