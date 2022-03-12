@@ -69,7 +69,7 @@ The easiest way to install Doppelganger is to clone this repository (or download
 pip install -r requirements.txt
 ```
 
-The repository also includes a `Pipfile` for those that prefer `pipenv`.
+The repository also includes a `pyproject.toml` file for those that prefer `pdm`.
 
 ## Example
 
