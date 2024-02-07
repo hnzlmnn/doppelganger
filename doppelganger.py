@@ -593,7 +593,7 @@ class Proxy:
     def _handle_conn(self, css: ssl.SSLSocket, address):
         size = 4096
         sip, sport = address
-        log.info(f"Incomming connection from %s:%d", sip, sport)
+        log.info("Incomming connection from %s:%d", sip, sport)
         try:
             with self.upstream.connect() as dss:
                 streams = [css, dss]
@@ -610,7 +610,7 @@ class Proxy:
                             else:
                                 log.warning("Weird behavior")
                     except Exception as e:
-                        log.info(f"Connection from %s:%d terminated", sip, sport)
+                        log.info("Connection from %s:%d terminated", sip, sport)
                         log.debug(e)
                         break
         finally:
