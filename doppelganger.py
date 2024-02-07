@@ -36,11 +36,22 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Union, Callable, List, Optional, Tuple
 
+from cryptography import x509
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives.asymmetric import rsa, ec
-from cryptography.hazmat.primitives.serialization import Encoding, PrivateFormat, NoEncryption
-from cryptography.x509 import load_pem_x509_certificate, CertificateBuilder, Certificate, load_der_x509_certificate, \
-    random_serial_number
+from cryptography.hazmat.primitives.serialization import (
+    Encoding,
+    PrivateFormat,
+    NoEncryption,
+    load_pem_private_key,
+)
+from cryptography.x509 import (
+    load_pem_x509_certificate,
+    CertificateBuilder,
+    Certificate,
+    load_der_x509_certificate,
+    random_serial_number,
+)
 
 log = logging.getLogger("doppelganger")
 
@@ -66,7 +77,7 @@ COLORS = {
     "INFO": WHITE,
     "DEBUG": BLUE,
     "CRITICAL": RED,
-    "ERROR": RED
+    "ERROR": RED,
 }
 
 NAMES = {
@@ -74,7 +85,7 @@ NAMES = {
     "INFO": "INFO",
     "DEBUG": "DEBG",
     "CRITICAL": "CRIT",
-    "ERROR": "ERR "
+    "ERROR": "ERR ",
 }
 
 
@@ -86,7 +97,9 @@ class ColoredFormatter(logging.Formatter):
     def format(self, record):
         levelname = record.levelname
         if self.use_color and levelname in COLORS:
-            levelname_color = COLOR_SEQ % (30 + COLORS[levelname]) + NAMES[levelname] + RESET_SEQ
+            levelname_color = (
+                COLOR_SEQ % (30 + COLORS[levelname]) + NAMES[levelname] + RESET_SEQ
+            )
             record.levelname = levelname_color
         return logging.Formatter.format(self, record)
 
@@ -123,7 +136,14 @@ def is_valid_port(parser, arg):
         parser.error(f"Invalid port {arg} not a number")
 
 
-NO_PROTO = ssl.OP_NO_SSLv2 | ssl.OP_NO_SSLv3 | ssl.OP_NO_TLSv1 | ssl.OP_NO_TLSv1_1 | ssl.OP_NO_TLSv1_2 | ssl.OP_NO_TLSv1_3
+NO_PROTO = (
+    ssl.OP_NO_SSLv2
+    | ssl.OP_NO_SSLv3
+    | ssl.OP_NO_TLSv1
+    | ssl.OP_NO_TLSv1_1
+    | ssl.OP_NO_TLSv1_2
+    | ssl.OP_NO_TLSv1_3
+)
 
 PROTOS = {
     "ssl3": NO_PROTO & ~ssl.OP_NO_SSLv3,
@@ -139,41 +159,135 @@ def parse_args():
     parser = argparse.ArgumentParser(
         prog="Doppelganger",
         description="A X.509 certificate cloner including a man-in-the-middle proxy to test if clients correctly "
-                    "validate certificates")
+        "validate certificates",
+    )
     group = parser.add_mutually_exclusive_group(required=True)
-    group.add_argument("-c", "--cert", dest="certificate",
-                       metavar="CERT", type=lambda x: is_valid_file(parser, x),
-                       help="Use the certificate in PEM format as template. If not set, will connect to target to "
-                            "grab the certificate.")
-    parser.add_argument("--ca", dest="ca", action="store_const", const=True, default=False,
-                        help="If set the certificate will be signed by a fake CA, instead of being self-signed.")
-    parser.add_argument("--copy-serial", dest="copy_serial", action="store_const", const=True, default=False,
-                        help="If set the serial of the certificate will be cloned as well. This could lead to problems"
-                             "if the original serial is still cached somewhere, thus by default it will be randomized.")
-    group.add_argument("-t", "--target", dest="target", metavar="HOST", type=str,
-                       help="The hostname/IP of the target server.")
-    parser.add_argument("-p", "--port", dest="port", metavar="PORT", default=443,
-                        type=lambda x: is_valid_port(parser, x),
-                        help="The hostname/IP of the target server. (default: %(default)d)")
-    parser.add_argument("-s", "--sni", dest="sni", metavar="SNI", type=str,
-                        help="If set it's used as the hostname for SNI.")
-    parser.add_argument("-l", "--listen", dest="listen",
-                        metavar="PORT", type=lambda x: is_valid_port(parser, x),
-                        help="The port to listen on locally. If not set, proxy won't be started.")
-    parser.add_argument("-P", "--protocol", dest="protocol", metavar="PROTOCOL",
-                        choices=list(PROTOS.keys()),
-                        help="Fix the SSL/TLS version to use. (default: python default)")
-    parser.add_argument("-o", "--output", dest="output",
-                        type=lambda x: is_valid_directory(parser, x),
-                        help="Location to store the certificate and private key. (default: temp directory)")
-    parser.add_argument("-6", dest="ipv6", action="store_const", const=True, default=False,
-                        help="Use IPv6. (default: %(default)s)")
-    parser.add_argument("-d", "--der", dest="der", action="store_const", const=True, default=False,
-                        help="Switches to DER format for file imported certificate.")
-    parser.add_argument("-v", "--verbose", action="count", default=1,
-                        help="Increases log output. Use multiple times to further increase log output.")
-    parser.add_argument("-f", "--force", dest="force", action="store_const", const=True, default=False,
-                        help="Overwrite certificates in output folder if already exists. Use with caution.")
+    group.add_argument(
+        "-c",
+        "--cert",
+        dest="certificate",
+        metavar="CERT",
+        type=lambda x: is_valid_file(parser, x),
+        help="Use the certificate in PEM format as template. If not set, will connect to target to "
+        "grab the certificate.",
+    )
+    parser.add_argument(
+        "--ca",
+        dest="ca",
+        action="store_const",
+        const=True,
+        default=False,
+        help="If set the certificate will be signed by a fake CA, instead of being self-signed.",
+    )
+    parser.add_argument(
+        "--ca-keysize",
+        dest="ca_keysize",
+        default=None,
+        help="By default, the key size of the CA will be equal to the key size of the cloned cert. "
+        "To specify a different key size, use this argument (e.g. 2048, 4096)",
+    )
+    parser.add_argument(
+        "--ca-file",
+        dest="ca_file",
+        default=None,
+        help="If provided, the CA file will be used instead of generating a new one",
+    )
+    parser.add_argument(
+        "--ca-key",
+        dest="ca_key",
+        default=None,
+        help="If using --ca-file, the CA private key must also be provided",
+    )
+    parser.add_argument(
+        "--copy-serial",
+        dest="copy_serial",
+        action="store_const",
+        const=True,
+        default=False,
+        help="If set the serial of the certificate will be cloned as well. This could lead to problems"
+        "if the original serial is still cached somewhere, thus by default it will be randomized.",
+    )
+    group.add_argument(
+        "-t",
+        "--target",
+        dest="target",
+        metavar="HOST",
+        type=str,
+        help="The hostname/IP of the target server.",
+    )
+    parser.add_argument(
+        "-p",
+        "--port",
+        dest="port",
+        metavar="PORT",
+        default=443,
+        type=lambda x: is_valid_port(parser, x),
+        help="The hostname/IP of the target server. (default: %(default)d)",
+    )
+    parser.add_argument(
+        "-s",
+        "--sni",
+        dest="sni",
+        metavar="SNI",
+        type=str,
+        help="If set it's used as the hostname for SNI.",
+    )
+    parser.add_argument(
+        "-l",
+        "--listen",
+        dest="listen",
+        metavar="PORT",
+        type=lambda x: is_valid_port(parser, x),
+        help="The port to listen on locally. If not set, proxy won't be started.",
+    )
+    parser.add_argument(
+        "-P",
+        "--protocol",
+        dest="protocol",
+        metavar="PROTOCOL",
+        choices=list(PROTOS.keys()),
+        help="Fix the SSL/TLS version to use. (default: python default)",
+    )
+    parser.add_argument(
+        "-o",
+        "--output",
+        dest="output",
+        type=lambda x: is_valid_directory(parser, x),
+        help="Location to store the certificate and private key. (default: temp directory)",
+    )
+    parser.add_argument(
+        "-6",
+        dest="ipv6",
+        action="store_const",
+        const=True,
+        default=False,
+        help="Use IPv6. (default: %(default)s)",
+    )
+    parser.add_argument(
+        "-d",
+        "--der",
+        dest="der",
+        action="store_const",
+        const=True,
+        default=False,
+        help="Switches to DER format for file imported certificate.",
+    )
+    parser.add_argument(
+        "-v",
+        "--verbose",
+        action="count",
+        default=1,
+        help="Increases log output. Use multiple times to further increase log output.",
+    )
+    parser.add_argument(
+        "-f",
+        "--force",
+        dest="force",
+        action="store_const",
+        const=True,
+        default=False,
+        help="Overwrite certificates in output folder if already exists. Use with caution.",
+    )
     return parser.parse_args()
 
 
@@ -206,7 +320,9 @@ class Upstream:
 
     @contextlib.contextmanager
     def connect(self) -> ssl.SSLSocket:
-        dss = socket.socket(socket.AF_INET6 if self.ipv6 else socket.AF_INET, socket.SOCK_STREAM)
+        dss = socket.socket(
+            socket.AF_INET6 if self.ipv6 else socket.AF_INET, socket.SOCK_STREAM
+        )
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
@@ -224,8 +340,21 @@ PathLike = Union[str, Path]
 
 
 class Cloner:
-    def __init__(self, use_ca=False, copy_serial=False, workdir=None, *, force=False):
+    def __init__(
+        self,
+        use_ca=False,
+        copy_serial=False,
+        workdir=None,
+        *,
+        ca_keysize,
+        ca_key,
+        ca_file,
+        force=False,
+    ):
         self.use_ca = use_ca
+        self.ca_keysize = ca_keysize
+        self.ca_file = ca_file
+        self.ca_key = ca_key
         self.copy_serial = copy_serial
         self.workdir = workdir
         self.force = force
@@ -234,10 +363,14 @@ class Cloner:
         with upstream.connect() as s:
             return load_der_x509_certificate(s.getpeercert(True), CRYPTO_BACKEND)
 
-    def _gen_private_key(self, cert: Certificate) -> PrivateKey:
+    def _gen_private_key(self, cert: Certificate, size=None) -> PrivateKey:
         pubkey = cert.public_key()
         if isinstance(pubkey, rsa.RSAPublicKey):
-            return rsa.generate_private_key(pubkey.public_numbers().e, pubkey.key_size, CRYPTO_BACKEND)
+            if size is None:
+                size = pubkey.key_size
+            return rsa.generate_private_key(
+                pubkey.public_numbers().e, size, CRYPTO_BACKEND
+            )
         elif isinstance(pubkey, ec.EllipticCurvePublicKey):
             return ec.generate_private_key(pubkey.curve, CRYPTO_BACKEND)
         else:
@@ -245,7 +378,11 @@ class Cloner:
             log.debug("Found unhandled public key: %s", type(pubkey))
             return rsa.generate_private_key(0x10001, 2048, CRYPTO_BACKEND)
 
-    def _build_ca(self, cert: Certificate, priv: Union[rsa.RSAPrivateKey, ec.EllipticCurvePrivateKey]) -> Certificate:
+    def _build_ca(
+        self,
+        cert: Certificate,
+        priv: Union[rsa.RSAPrivateKey, ec.EllipticCurvePrivateKey],
+    ) -> Certificate:
         # Create builder
         builder = CertificateBuilder()
 
@@ -256,14 +393,20 @@ class Cloner:
         builder = builder.not_valid_after(datetime.utcnow() + timedelta(days=3650))
         builder = builder.serial_number(random_serial_number())
         builder = builder.public_key(priv.public_key())
+        builder = builder.add_extension(
+            x509.BasicConstraints(ca=True, path_length=None),
+            critical=True,
+        )
 
         return builder.sign(
             private_key=priv,
             algorithm=cert.signature_hash_algorithm,
-            backend=CRYPTO_BACKEND
+            backend=CRYPTO_BACKEND,
         )
 
-    def _build_cert(self, cert: Certificate, priv: PrivateKey, *, ca: CertAndKey = None) -> Certificate:
+    def _build_cert(
+        self, cert: Certificate, priv: PrivateKey, *, ca: CertAndKey = None
+    ) -> Certificate:
         # Create builder
         builder = CertificateBuilder()
 
@@ -272,22 +415,27 @@ class Cloner:
         builder = builder.issuer_name(cert.issuer)
         builder = builder.not_valid_before(cert.not_valid_before)
         builder = builder.not_valid_after(cert.not_valid_after)
-        builder = builder.serial_number(cert.serial_number if self.copy_serial else random_serial_number())
+        builder = builder.serial_number(
+            cert.serial_number if self.copy_serial else random_serial_number()
+        )
         builder = builder.public_key(priv.public_key())
 
         # Add all extensions
         for extension in cert.extensions:
-            builder = builder.add_extension(extension.value, critical=extension.critical)
+            builder = builder.add_extension(
+                extension.value, critical=extension.critical
+            )
 
         # Sign the
         return builder.sign(
-            private_key=priv,
+            private_key=ca[1] if ca else priv,
             algorithm=cert.signature_hash_algorithm,
-            backend=CRYPTO_BACKEND
+            backend=CRYPTO_BACKEND,
         )
 
-    def __save_cert_and_key(self, directory: Path, cert_and_key: CertAndKey, prefix: str = "") -> Optional[
-        Tuple[Path, Path]]:
+    def __save_cert_and_key(
+        self, directory: Path, cert_and_key: CertAndKey, prefix: str = ""
+    ) -> Optional[Tuple[Path, Path]]:
         certname = prefix + "certificate.pem"
         certfile = directory / certname
         keyname = prefix + "key.pem"
@@ -295,7 +443,10 @@ class Cloner:
 
         if certfile.exists():
             if not self.force:
-                log.error("Certificate file %s exists in output directory, pass --force to overwrite", certname)
+                log.error(
+                    "Certificate file %s exists in output directory, pass --force to overwrite",
+                    certname,
+                )
                 return None
 
         cert, priv = cert_and_key
@@ -305,14 +456,18 @@ class Cloner:
             certw.write(cert.public_bytes(Encoding.PEM))
         # Write key
         with open(keyfile, "wb") as keyw:
-            keyw.write(priv.private_bytes(
-                encoding=Encoding.PEM,
-                format=PrivateFormat.TraditionalOpenSSL,
-                encryption_algorithm=NoEncryption()
-            ))
+            keyw.write(
+                priv.private_bytes(
+                    encoding=Encoding.PEM,
+                    format=PrivateFormat.PKCS8,
+                    encryption_algorithm=NoEncryption(),
+                )
+            )
         return certfile, keyfile
 
-    def _save_all(self, cert: CertAndKey, directory: PathLike, *, ca: CertAndKey = None) -> Optional[Tuple[Path, Path]]:
+    def _save_all(
+        self, cert: CertAndKey, directory: PathLike, *, ca: CertAndKey = None
+    ) -> Optional[Tuple[Path, Path]]:
         if directory is None:
             directory = tempfile.mkdtemp(prefix="doppelganger-")
         if isinstance(directory, str):
@@ -336,9 +491,26 @@ class Cloner:
         # Generate a new key pair matching pub key infos
         ca = None
         if self.use_ca:
-            log.info("Generating a new key pair for the CA")
-            priv_ca = self._gen_private_key(cert)
-            ca = self._build_ca(cert, priv_ca), priv_ca
+            if self.ca_file:
+                log.info("Loading CA from file")
+                ca_file = Path(self.ca_file).expanduser().resolve()
+                if not ca_file.exists():
+                    log.error("CA file %s does not exist", ca_file)
+                    raise ValueError("CA file does not exist")
+                cert_ca = load_pem_x509_certificate(
+                    ca_file.open("rb").read(), CRYPTO_BACKEND
+                )
+
+                ca_key = Path(self.ca_key).expanduser().resolve()
+                if not ca_key.exists():
+                    log.error("CA key %s does not exist", ca_key)
+                    raise ValueError("CA key does not exist")
+                priv_ca = load_pem_private_key(ca_key.open("rb").read(), None)
+                ca = cert_ca, priv_ca
+            else:
+                log.info("Generating a new key pair for the CA")
+                priv_ca = self._gen_private_key(cert, self.ca_keysize)
+                ca = self._build_ca(cert, priv_ca), priv_ca
 
         log.info("Generating a new key pair for the certificate")
         priv = self._gen_private_key(cert)
@@ -351,7 +523,9 @@ class Cloner:
 
     def clone_cert_from_pem(self, pem: str):
         try:
-            cert = load_pem_x509_certificate(pem.encode("ascii", "ignore"), CRYPTO_BACKEND)
+            cert = load_pem_x509_certificate(
+                pem.encode("ascii", "ignore"), CRYPTO_BACKEND
+            )
         except Exception as e:
             log.critical("Unable to load file as PEM")
             log.debug(e)
@@ -367,7 +541,9 @@ class Cloner:
             return None
         return self.clone_cert(cert)
 
-    def clone_cert_from_file(self, file: Union[str, Path], encoding: Encoding = Encoding.PEM):
+    def clone_cert_from_file(
+        self, file: Union[str, Path], encoding: Encoding = Encoding.PEM
+    ):
         if encoding == Encoding.PEM:
             return self.clone_cert_from_pem(open(file, "r").read())
         elif encoding == Encoding.DER:
@@ -384,7 +560,15 @@ class Cloner:
 
 
 class Proxy:
-    def __init__(self, upstream: Upstream, listen_port: int, ipv6: bool, protocol: str, certfile: Path, keyfile: Path):
+    def __init__(
+        self,
+        upstream: Upstream,
+        listen_port: int,
+        ipv6: bool,
+        protocol: str,
+        certfile: Path,
+        keyfile: Path,
+    ):
         self.upstream = upstream
         self.listen_port = listen_port
         self.ipv6 = ipv6
@@ -415,7 +599,9 @@ class Proxy:
                 streams = [css, dss]
                 while True:
                     try:
-                        inputready, outputready, exceptready = select.select(streams, [], [])
+                        inputready, outputready, exceptready = select.select(
+                            streams, [], []
+                        )
                         for s in inputready:
                             if s == css:
                                 self._handle_data(s, dss, self.c2s_hooks, size)
@@ -437,7 +623,9 @@ class Proxy:
         self.s2c_hooks.append(hook)
 
     def run(self):
-        lss = socket.socket(socket.AF_INET6 if self.ipv6 else socket.AF_INET, socket.SOCK_STREAM)
+        lss = socket.socket(
+            socket.AF_INET6 if self.ipv6 else socket.AF_INET, socket.SOCK_STREAM
+        )
         lss.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         lss.bind(("", self.listen_port))
         ctx = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
@@ -458,9 +646,14 @@ def main():
     args = parse_args()
 
     # Setup logging
-    args.verbose = max(logging.DEBUG, logging.ERROR - (10 * args.verbose) if args.verbose > 0 else logging.ERROR)
+    args.verbose = max(
+        logging.DEBUG,
+        logging.ERROR - (10 * args.verbose) if args.verbose > 0 else logging.ERROR,
+    )
     syslog = logging.StreamHandler()
-    syslog.setFormatter(ColoredFormatter(formatter_message("[$BOLD%(levelname)s$RESET] %(message)s")))
+    syslog.setFormatter(
+        ColoredFormatter(formatter_message("[$BOLD%(levelname)s$RESET] %(message)s"))
+    )
     log.setLevel(args.verbose)
     log.addHandler(syslog)
 
@@ -468,10 +661,20 @@ def main():
     upstream = Upstream(args.target, args.port, args.ipv6, args.sni)
 
     # Init cloner
-    cloner = Cloner(args.ca, args.copy_serial, args.output, force=args.force)
+    cloner = Cloner(
+        args.ca,
+        args.copy_serial,
+        args.output,
+        ca_keysize=args.ca_keysize,
+        ca_file=args.ca_file,
+        ca_key=args.ca_key,
+        force=args.force,
+    )
     tested_upstream = False
     if args.certificate:
-        files = cloner.clone_cert_from_file(args.certificate, Encoding.DER if args.der else Encoding.PEM)
+        files = cloner.clone_cert_from_file(
+            args.certificate, Encoding.DER if args.der else Encoding.PEM
+        )
         if files is None:
             return
         certfile, keyfile = files
@@ -484,15 +687,25 @@ def main():
     else:
         # target and certificate are required and mutually exclusive
         return
+
     # Proxy mode?
     if args.listen is not None:
         # Don't test upstream twice, it's just to give instant feedback
         if not tested_upstream and not upstream.test_connection():
             return
-        proxy = Proxy(upstream, args.listen, args.ipv6, args.protocol, certfile, keyfile)
+
+        proxy = Proxy(
+            upstream, args.listen, args.ipv6, args.protocol, certfile, keyfile
+        )
+
         # Add some debugging hooks
-        proxy.add_c2s_hook(lambda stuff: log.debug("****** Client => Server ******\n%s", stuff))
-        proxy.add_s2c_hook(lambda stuff: log.debug("****** Server => Client ******\n%s", stuff))
+        proxy.add_c2s_hook(
+            lambda stuff: log.debug("****** Client => Server ******\n%s", stuff)
+        )
+        proxy.add_s2c_hook(
+            lambda stuff: log.debug("****** Server => Client ******\n%s", stuff)
+        )
+
         proxy.run()
 
 

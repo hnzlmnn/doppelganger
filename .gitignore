@@ -30,6 +30,9 @@ share/python-wheels/
 *.egg
 MANIFEST
 
+# SonarLint plugin
+.idea/sonarlint/
+
 # PyInstaller
 #  Usually these files are written by a python script from a template
 #  before PyInstaller builds the exe, so as to inject date/other infos into it.
@@ -149,7 +152,7 @@ dmypy.json
 cython_debug/
 
 # PDM
-.pdm.toml
+.pdm-python
 
 # PyCharm
 #  JetBrains specific template is maintained in a separate JetBrains.gitignore that can

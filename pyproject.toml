@@ -5,7 +5,6 @@ description = "A X.509 certificate cloner including a man-in-the-middle proxy to
 authors = [
     {name = "Malte Heinzelmann", email = "malte@cybaer.ninja"},
 ]
-license-expression = "MIT"
 dependencies = ["cryptography"]
 requires-python = ">=3.7"
 
